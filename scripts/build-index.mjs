@@ -11,8 +11,14 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 import { Redis } from "@upstash/redis";
 
-const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
-const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
+const url =
+  process.env.UPSTASH_REDIS_REST_URL ??
+  process.env.UPSTASH_REDIS_REST_KV_REST_API_URL ??
+  process.env.KV_REST_API_URL;
+const token =
+  process.env.UPSTASH_REDIS_REST_TOKEN ??
+  process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN ??
+  process.env.KV_REST_API_TOKEN;
 if (!url || !token) {
   console.error(
     "Missing Redis credentials. Run `vercel env pull .env.local` first (after adding a Redis integration in the Vercel dashboard)."
