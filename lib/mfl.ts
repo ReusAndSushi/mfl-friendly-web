@@ -96,6 +96,63 @@ export async function setDivisionClubs(division: number, clubs: ClubRecord[]) {
   await kv().set(divisionKey(division), clubs);
 }
 
+const MAX_CLUB_ID_GUESS = 12000;
+
+export async function detectMaxClubId(): Promise<number> {
+  let lo = 1;
+  let hi = MAX_CLUB_ID_GUESS;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi + 1) / 2);
+    const club = await getClub(mid);
+    if (club !== null) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/** Process one bounded chunk of club ids into the division-bucketed KV
+ * index. Designed to be called repeatedly (e.g. by an admin endpoint hit
+ * from an external loop) since a full ~11,500-id sweep doesn't fit in one
+ * serverless invocation. Read-modify-write on division buckets is safe
+ * here because chunks are expected to run sequentially, not concurrently. */
+export async function buildIndexChunk(fromId: number, toId: number) {
+  const db = kv();
+  const additions = new Map<number, ClubRecord[]>();
+  let scanned = 0;
+
+  const ids = Array.from({ length: toId - fromId + 1 }, (_, i) => fromId + i);
+  const CONCURRENCY = 15;
+  let cursor = 0;
+  async function worker() {
+    while (cursor < ids.length) {
+      const id = ids[cursor++];
+      const club = await getClub(id).catch(() => null);
+      scanned++;
+      if (club && club.status === "FOUNDED" && typeof club.division === "number") {
+        const rec: ClubRecord = {
+          id,
+          name: club.name,
+          division: club.division,
+          friendlyPref: club.friendlyPref ?? null,
+          friendlyPrefCooldown: club.friendlyPrefCooldown ?? 0,
+        };
+        if (!additions.has(club.division)) additions.set(club.division, []);
+        additions.get(club.division)!.push(rec);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+  for (const [division, recs] of additions) {
+    const existing = await getDivisionClubs(division);
+    const byId = new Map(existing.map((r) => [r.id, r]));
+    for (const r of recs) byId.set(r.id, r);
+    await setDivisionClubs(division, Array.from(byId.values()));
+  }
+
+  return { scanned, foundedCount: [...additions.values()].reduce((n, a) => n + a.length, 0) };
+}
+
 // --- Discovery ------------------------------------------------------------
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>) {
