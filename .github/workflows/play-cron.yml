@@ -1,0 +1,16 @@
+name: Play MFL friendly
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  play:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /api/play-next
+        run: |
+          curl -sS -X POST "${{ secrets.VERCEL_APP_URL }}/api/play-next" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -w "\nHTTP %{http_code}\n"
