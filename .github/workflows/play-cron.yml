@@ -9,8 +9,13 @@ jobs:
   play:
     runs-on: ubuntu-latest
     steps:
-      - name: Call /api/play-next
+      - name: Call /api/play-next (single continuous club via MFL_CLUB_ID)
         run: |
           curl -sS -X POST "${{ secrets.VERCEL_APP_URL }}/api/play-next" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -w "\nHTTP %{http_code}\n"
+      - name: Call /api/batch/tick (on-command multi-club batches, if any are running)
+        run: |
+          curl -sS -X POST "${{ secrets.VERCEL_APP_URL }}/api/batch/tick" \
             -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
             -w "\nHTTP %{http_code}\n"
