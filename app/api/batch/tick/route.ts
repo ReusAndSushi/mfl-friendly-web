@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { tickBatch } from "@/lib/batch";
+import { tickOpponentBatch } from "@/lib/batch";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -15,10 +15,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Server is missing MFL_AUTH_HEADER env var" }, { status: 500 });
   }
 
-  const tolerance = Number(process.env.MFL_TOLERANCE ?? "3");
-  const divisionRadius = Number(process.env.MFL_DIVISION_RADIUS ?? "1");
-  const formation = process.env.MFL_FORMATION ?? "4-3-3";
-
-  const results = await tickBatch({ authHeader, tolerance, divisionRadius, formation });
+  const results = await tickOpponentBatch(authHeader);
   return NextResponse.json({ results });
 }

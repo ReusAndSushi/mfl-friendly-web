@@ -36,11 +36,21 @@ export type ClubRecord = {
 
 export type Candidate = { id: number; name: string; rating: number; gap: number };
 
-async function fetchJson(url: string): Promise<any> {
-  const r = await fetch(url);
-  if (r.status === 404) return null;
-  if (!r.ok) throw new Error(`${url} -> ${r.status}`);
-  return r.json();
+async function fetchJson(url: string, retries = 3): Promise<any> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const r = await fetch(url);
+    if (r.status === 404) return null;
+    if (r.ok) return r.json();
+    // 403/429/5xx from this API have been observed to be transient
+    // (rate-limiting under heavy traffic), not a real per-club problem -
+    // retry with backoff before giving up.
+    if ([403, 429, 500, 502, 503, 504].includes(r.status) && attempt < retries - 1) {
+      await new Promise((res) => setTimeout(res, 300 * (attempt + 1)));
+      continue;
+    }
+    throw new Error(`${url} -> ${r.status}`);
+  }
+  throw new Error(`${url} -> exhausted retries`);
 }
 
 export async function getClub(clubId: number) {

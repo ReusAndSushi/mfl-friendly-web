@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { getBatchStatus } from "@/lib/batch";
+import { getOpponentBatchStatus } from "@/lib/batch";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const status = await getBatchStatus();
+  const status = await getOpponentBatchStatus();
   return NextResponse.json({ clubs: status });
 }

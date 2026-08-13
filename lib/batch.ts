@@ -1,109 +1,105 @@
-// Multi-club batch play: run N friendlies across several of your own clubs
-// on command, rather than the single continuous club driven by MFL_CLUB_ID.
-// Each club has its OWN 5-minute cooldown (it's a per-club timestamp on
-// MFL's side, not global), so clubs in a batch progress independently -
-// one tick can play a friendly for every eligible club at once, not just
-// one club per tick.
+// On-command batch: your club plays a queue of friendlies against
+// hand-picked opponents (e.g. 5 games each vs. 5 chosen teams = 25 total).
+// One home club per batch queue, processed in order; the club's own
+// 5-minute cooldown paces how fast the queue drains (one friendly per
+// eligible home club per tick). Multiple home clubs can each have their
+// own independent queue running at the same time.
 import { kv } from "@/lib/kv";
-import { findSimilarOpponents, playFriendly } from "@/lib/mfl";
+import { playFriendly } from "@/lib/mfl";
 
 const MIN_INTERVAL_MS = 5 * 60 * 1000;
-const RECENT_OPPONENT_TTL_SECONDS = 60 * 60 * 6;
 
-const ACTIVE_KEY = "batch:active";
-const remainingKey = (clubId: number) => `batch:remaining:${clubId}`;
-const lastAtKey = (clubId: number) => `batch:lastAt:${clubId}`;
-const playedKey = (clubId: number) => `batch:played:${clubId}`;
-const recentOpponentsKey = (clubId: number) => `batch:recentOpponents:${clubId}`;
+const HOME_CLUBS_KEY = "oppbatch:homeClubs";
+const queueKey = (clubId: number) => `oppbatch:queue:${clubId}`;
+const lastAtKey = (clubId: number) => `oppbatch:lastAt:${clubId}`;
+const playedKey = (clubId: number) => `oppbatch:played:${clubId}`;
 
-export async function startBatch(clubIds: number[], countPerClub: number) {
+export type OpponentPick = { id: number; name: string };
+
+/** Queue up countPerOpponent friendlies against each chosen opponent,
+ * round-robin interleaved so the same opponent isn't played back-to-back
+ * when possible. */
+export async function startOpponentBatch(
+  clubId: number,
+  opponents: OpponentPick[],
+  countPerOpponent: number
+) {
   const db = kv();
-  for (const clubId of clubIds) {
-    await db.set(remainingKey(clubId), countPerClub);
-    await db.set(playedKey(clubId), 0);
-    await db.sadd(ACTIVE_KEY, String(clubId));
+  const queue: OpponentPick[] = [];
+  for (let round = 0; round < countPerOpponent; round++) {
+    for (const opp of opponents) queue.push(opp);
   }
-  return { clubIds, countPerClub };
+  if (queue.length > 0) {
+    await db.rpush(queueKey(clubId), ...queue.map((o) => JSON.stringify(o)));
+    await db.sadd(HOME_CLUBS_KEY, String(clubId));
+  }
+  return { clubId, opponents, countPerOpponent, totalQueued: queue.length };
 }
 
-export async function getBatchStatus() {
+export async function getOpponentBatchStatus() {
   const db = kv();
-  const active = ((await db.smembers(ACTIVE_KEY)) ?? []).map(Number);
-  const status = await Promise.all(
-    active.map(async (clubId) => ({
+  const homeClubs = ((await db.smembers(HOME_CLUBS_KEY)) ?? []).map(Number);
+  return Promise.all(
+    homeClubs.map(async (clubId) => ({
       clubId,
-      remaining: (await db.get<number>(remainingKey(clubId))) ?? 0,
+      queued: await db.llen(queueKey(clubId)),
       played: (await db.get<number>(playedKey(clubId))) ?? 0,
       lastAt: (await db.get<number>(lastAtKey(clubId))) ?? null,
     }))
   );
-  return status;
 }
 
 export type TickResult = {
   clubId: number;
   played: boolean;
   reason?: string;
-  opponent?: { id: number; name: string; rating: number; gap: number };
+  opponent?: OpponentPick;
 };
 
-/** Process one tick: for every active club whose cooldown has elapsed and
- * has remaining count, play one friendly. Independent per club, so this
- * can play for multiple clubs in a single call. */
-export async function tickBatch(opts: {
-  authHeader: string;
-  tolerance: number;
-  divisionRadius: number;
-  formation: string;
-}): Promise<TickResult[]> {
+export async function tickOpponentBatch(authHeader: string): Promise<TickResult[]> {
   const db = kv();
-  const active = ((await db.smembers(ACTIVE_KEY)) ?? []).map(Number);
+  const homeClubs = ((await db.smembers(HOME_CLUBS_KEY)) ?? []).map(Number);
   const now = Date.now();
   const results: TickResult[] = [];
 
-  for (const clubId of active) {
-    const remaining = (await db.get<number>(remainingKey(clubId))) ?? 0;
-    if (remaining <= 0) {
-      await db.srem(ACTIVE_KEY, String(clubId));
-      continue;
-    }
+  for (const clubId of homeClubs) {
+    try {
+      const qLen = await db.llen(queueKey(clubId));
+      if (qLen === 0) {
+        await db.srem(HOME_CLUBS_KEY, String(clubId));
+        continue;
+      }
 
-    const lastAt = (await db.get<number>(lastAtKey(clubId))) ?? 0;
-    if (now - lastAt < MIN_INTERVAL_MS) {
-      results.push({ clubId, played: false, reason: "cooldown" });
-      continue;
-    }
+      const lastAt = (await db.get<number>(lastAtKey(clubId))) ?? 0;
+      if (now - lastAt < MIN_INTERVAL_MS) {
+        results.push({ clubId, played: false, reason: "cooldown" });
+        continue;
+      }
 
-    const recentOpponents = (await db.smembers(recentOpponentsKey(clubId))) ?? [];
-    const recentSet = new Set(recentOpponents.map(String));
+      const raw = await db.lpop(queueKey(clubId));
+      if (!raw) {
+        await db.srem(HOME_CLUBS_KEY, String(clubId));
+        continue;
+      }
+      const opponent: OpponentPick = typeof raw === "string" ? JSON.parse(raw) : (raw as any);
 
-    const { matches } = await findSimilarOpponents({
-      clubId,
-      formation: opts.formation,
-      tolerance: opts.tolerance,
-      divisionRadius: opts.divisionRadius,
-    });
-    const candidate = matches.find((m) => !recentSet.has(String(m.id)));
-    if (!candidate) {
-      results.push({ clubId, played: false, reason: "no_eligible_candidate" });
-      continue;
-    }
+      const result = await playFriendly(clubId, opponent.id, authHeader);
+      if (result.ok) {
+        await db.set(lastAtKey(clubId), now);
+        await db.incr(playedKey(clubId));
+        results.push({ clubId, played: true, opponent });
+      } else {
+        // Put it back at the front of the queue so a transient API error
+        // doesn't silently drop this opponent from the batch.
+        await db.lpush(queueKey(clubId), raw);
+        results.push({ clubId, played: false, reason: `api_error_${result.status}` });
+      }
 
-    const result = await playFriendly(clubId, candidate.id, opts.authHeader);
-    if (result.ok) {
-      await db.set(lastAtKey(clubId), now);
-      await db.set(remainingKey(clubId), remaining - 1);
-      await db.incr(playedKey(clubId));
-      await db.sadd(recentOpponentsKey(clubId), String(candidate.id));
-      await db.expire(recentOpponentsKey(clubId), RECENT_OPPONENT_TTL_SECONDS);
-      if (remaining - 1 <= 0) await db.srem(ACTIVE_KEY, String(clubId));
-      results.push({
-        clubId,
-        played: true,
-        opponent: { id: candidate.id, name: candidate.name, rating: candidate.rating, gap: candidate.gap },
-      });
-    } else {
-      results.push({ clubId, played: false, reason: `api_error_${result.status}` });
+      if ((await db.llen(queueKey(clubId))) === 0) {
+        await db.srem(HOME_CLUBS_KEY, String(clubId));
+      }
+    } catch (e: any) {
+      results.push({ clubId, played: false, reason: `error: ${String(e?.message ?? e)}` });
     }
   }
 

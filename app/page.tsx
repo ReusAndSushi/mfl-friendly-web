@@ -10,7 +10,7 @@ type DiscoverResult = {
   error?: string;
 };
 type Status = { lastAt: number | null; countToday: number; indexBuiltAt: number | null };
-type BatchClubStatus = { clubId: number; remaining: number; played: number; lastAt: number | null };
+type BatchClubStatus = { clubId: number; queued: number; played: number; lastAt: number | null };
 
 const FORMATIONS = ["4-3-3", "4-4-2", "4-2-3-1", "3-5-2", "3-4-3"];
 
@@ -23,8 +23,8 @@ export default function Page() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
 
-  const [batchClubIds, setBatchClubIds] = useState("");
-  const [batchCount, setBatchCount] = useState("25");
+  const [selected, setSelected] = useState<Record<number, Candidate>>({});
+  const [countPerOpponent, setCountPerOpponent] = useState("5");
   const [batchSecret, setBatchSecret] = useState("");
   const [batchMessage, setBatchMessage] = useState<string | null>(null);
   const [batchStarting, setBatchStarting] = useState(false);
@@ -53,6 +53,7 @@ export default function Page() {
   async function runDiscover() {
     setLoading(true);
     setResult(null);
+    setSelected({});
     try {
       const params = new URLSearchParams({ clubId, formation, tolerance, divisionRadius });
       const r = await fetch(`/api/discover?${params}`);
@@ -63,28 +64,41 @@ export default function Page() {
     }
   }
 
+  function toggleSelected(c: Candidate) {
+    setSelected((prev) => {
+      const next = { ...prev };
+      if (next[c.id]) delete next[c.id];
+      else next[c.id] = c;
+      return next;
+    });
+  }
+
+  const selectedList = Object.values(selected);
+  const totalQueued = selectedList.length * (Number(countPerOpponent) || 0);
+
   async function startBatch() {
     setBatchStarting(true);
     setBatchMessage(null);
     try {
-      const clubIds = batchClubIds
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map(Number);
       const r = await fetch("/api/batch/start", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-cron-secret": batchSecret },
-        body: JSON.stringify({ clubIds, countPerClub: Number(batchCount) }),
+        body: JSON.stringify({
+          clubId: Number(clubId),
+          opponents: selectedList.map((c) => ({ id: c.id, name: c.name })),
+          countPerOpponent: Number(countPerOpponent),
+        }),
       });
       const j = await r.json();
       if (!r.ok) {
         setBatchMessage(`Error: ${j.error ?? r.status}`);
       } else {
         setBatchMessage(
-          `Started: ${j.clubIds.length} club(s) x ${j.countPerClub} friendlies each. ` +
-            `Runs automatically as the cron ticks (every 5 min, one friendly per eligible club per tick).`
+          `Queued ${j.totalQueued} friendlies for club ${j.clubId}: ${j.countPerOpponent} each vs. ` +
+            `${j.opponents.map((o: Candidate) => o.name).join(", ")}. Plays automatically as the ` +
+            `cron ticks (every 5 min, respecting your club's cooldown).`
         );
+        setSelected({});
         refreshBatchStatus();
       }
     } finally {
@@ -117,11 +131,7 @@ export default function Page() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
         <label>
           Club ID
-          <input
-            value={clubId}
-            onChange={(e) => setClubId(e.target.value)}
-            style={inputStyle}
-          />
+          <input value={clubId} onChange={(e) => setClubId(e.target.value)} style={inputStyle} />
         </label>
         <label>
           Formation
@@ -135,11 +145,7 @@ export default function Page() {
         </label>
         <label>
           Tolerance (OVR gap)
-          <input
-            value={tolerance}
-            onChange={(e) => setTolerance(e.target.value)}
-            style={inputStyle}
-          />
+          <input value={tolerance} onChange={(e) => setTolerance(e.target.value)} style={inputStyle} />
         </label>
         <label>
           Division radius
@@ -155,9 +161,7 @@ export default function Page() {
         {loading ? "Searching..." : "Find similar opponents"}
       </button>
 
-      {result?.error && (
-        <p style={{ color: "#ff6b6b", marginTop: 16 }}>{result.error}</p>
-      )}
+      {result?.error && <p style={{ color: "#ff6b6b", marginTop: 16 }}>{result.error}</p>}
 
       {result && !result.error && (
         <div style={{ marginTop: 24 }}>
@@ -165,9 +169,13 @@ export default function Page() {
             Your best-XI rating: <strong>{result.myRating.toFixed(1)}</strong>
             {result.myDivision !== null && <> · division {result.myDivision}</>}
           </p>
+          <p style={{ color: "#999", fontSize: 13, marginTop: -8 }}>
+            Check the opponents you want, then set a count and start a batch below.
+          </p>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: "1px solid #333" }}>
+                <th style={{ padding: "6px 4px", width: 28 }}></th>
                 <th style={{ padding: "6px 4px" }}>Club</th>
                 <th style={{ padding: "6px 4px" }}>Rating</th>
                 <th style={{ padding: "6px 4px" }}>Gap</th>
@@ -176,6 +184,13 @@ export default function Page() {
             <tbody>
               {result.matches.map((m) => (
                 <tr key={m.id} style={{ borderBottom: "1px solid #222" }}>
+                  <td style={{ padding: "6px 4px" }}>
+                    <input
+                      type="checkbox"
+                      checked={!!selected[m.id]}
+                      onChange={() => toggleSelected(m)}
+                    />
+                  </td>
                   <td style={{ padding: "6px 4px" }}>{m.name}</td>
                   <td style={{ padding: "6px 4px" }}>{m.rating.toFixed(1)}</td>
                   <td style={{ padding: "6px 4px" }}>{m.gap.toFixed(1)}</td>
@@ -183,7 +198,7 @@ export default function Page() {
               ))}
               {result.matches.length === 0 && (
                 <tr>
-                  <td colSpan={3} style={{ padding: "12px 4px", color: "#999" }}>
+                  <td colSpan={4} style={{ padding: "12px 4px", color: "#999" }}>
                     No candidates within tolerance. Try a larger tolerance or division radius.
                   </td>
                 </tr>
@@ -197,43 +212,41 @@ export default function Page() {
 
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Run a batch</h2>
       <p style={{ color: "#999", marginTop: 0, fontSize: 14 }}>
-        Play a set number of friendlies across one or more of your clubs. Each club has its own
-        5-minute cooldown, so multiple clubs progress in parallel - the cron job (every 5 min)
-        plays one friendly per eligible club per tick until each reaches its count.
+        Your club ({clubId || "?"}) plays a queue of friendlies against the opponents you checked
+        above, {countPerOpponent || "N"} games against each. Your club has a single 5-minute
+        cooldown, so the queue drains one game per tick, cycling through opponents in order.
       </p>
 
-      <div style={{ display: "grid", gap: 12, marginBottom: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
         <label>
-          Club IDs (comma-separated)
+          Games per opponent
           <input
-            value={batchClubIds}
-            onChange={(e) => setBatchClubIds(e.target.value)}
-            placeholder="602, 208, 326, 557, 650"
+            value={countPerOpponent}
+            onChange={(e) => setCountPerOpponent(e.target.value)}
             style={inputStyle}
           />
         </label>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <label>
-            Friendlies per club
-            <input
-              value={batchCount}
-              onChange={(e) => setBatchCount(e.target.value)}
-              style={inputStyle}
-            />
-          </label>
-          <label>
-            Admin secret (CRON_SECRET)
-            <input
-              type="password"
-              value={batchSecret}
-              onChange={(e) => setBatchSecret(e.target.value)}
-              style={inputStyle}
-            />
-          </label>
-        </div>
+        <label>
+          Admin secret (CRON_SECRET)
+          <input
+            type="password"
+            value={batchSecret}
+            onChange={(e) => setBatchSecret(e.target.value)}
+            style={inputStyle}
+          />
+        </label>
       </div>
 
-      <button onClick={startBatch} disabled={batchStarting} style={buttonStyle}>
+      <p style={{ fontSize: 14, marginBottom: 12 }}>
+        Selected: {selectedList.length} opponent(s) → {totalQueued} total friendlies
+        {selectedList.length > 0 && <> ({selectedList.map((c) => c.name).join(", ")})</>}
+      </p>
+
+      <button
+        onClick={startBatch}
+        disabled={batchStarting || selectedList.length === 0 || !batchSecret}
+        style={buttonStyle}
+      >
         {batchStarting ? "Starting..." : "Start batch"}
       </button>
 
@@ -245,7 +258,7 @@ export default function Page() {
             <tr style={{ textAlign: "left", borderBottom: "1px solid #333" }}>
               <th style={{ padding: "6px 4px" }}>Club ID</th>
               <th style={{ padding: "6px 4px" }}>Played</th>
-              <th style={{ padding: "6px 4px" }}>Remaining</th>
+              <th style={{ padding: "6px 4px" }}>Queued</th>
               <th style={{ padding: "6px 4px" }}>Last played</th>
             </tr>
           </thead>
@@ -254,7 +267,7 @@ export default function Page() {
               <tr key={c.clubId} style={{ borderBottom: "1px solid #222" }}>
                 <td style={{ padding: "6px 4px" }}>{c.clubId}</td>
                 <td style={{ padding: "6px 4px" }}>{c.played}</td>
-                <td style={{ padding: "6px 4px" }}>{c.remaining}</td>
+                <td style={{ padding: "6px 4px" }}>{c.queued}</td>
                 <td style={{ padding: "6px 4px" }}>
                   {c.lastAt ? new Date(c.lastAt).toLocaleTimeString() : "-"}
                 </td>
