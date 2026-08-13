@@ -9,12 +9,14 @@ jobs:
   play:
     runs-on: ubuntu-latest
     steps:
-      - name: Call /api/play-next (single continuous club via MFL_CLUB_ID)
-        run: |
-          curl -sS -X POST "${{ secrets.VERCEL_APP_URL }}/api/play-next" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            -w "\nHTTP %{http_code}\n"
-      - name: Call /api/batch/tick (on-command multi-club batches, if any are running)
+      # The legacy continuous single-club auto-play (MFL_CLUB_ID, /api/play-next)
+      # is intentionally NOT called here - it and /api/batch/tick would compete
+      # for the same club's real MFL cooldown when targeting the same club,
+      # causing one to fail with api_error_400 (observed in practice). The
+      # opponent-picker batch system is the active workflow; re-add a step
+      # calling /api/play-next only if you want the old continuous mode back
+      # AND are sure it targets a different club than any running batch.
+      - name: Call /api/batch/tick (on-command opponent-picker batches, if any are running)
         run: |
           curl -sS -X POST "${{ secrets.VERCEL_APP_URL }}/api/batch/tick" \
             -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
