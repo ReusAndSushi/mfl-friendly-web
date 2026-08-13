@@ -11,16 +11,30 @@ import { Redis } from "@upstash/redis";
 
 let client: Redis | null = null;
 
+// Order matters: the plain UPSTASH_REDIS_REST_URL/TOKEN names can end up
+// holding a stale/invalid value left over from an earlier empty .env.example
+// auto-import, so the confirmed-real integration-managed names (the
+// <prefix>_KV_REST_API_* ones, verified against the Vercel dashboard) are
+// checked first. Only a value that's actually a valid https URL counts for
+// the URL candidates.
 const URL_CANDIDATES = [
-  "UPSTASH_REDIS_REST_URL",
   "UPSTASH_REDIS_REST_KV_REST_API_URL",
   "KV_REST_API_URL",
+  "UPSTASH_REDIS_REST_URL",
 ];
 const TOKEN_CANDIDATES = [
-  "UPSTASH_REDIS_REST_TOKEN",
   "UPSTASH_REDIS_REST_KV_REST_API_TOKEN",
   "KV_REST_API_TOKEN",
+  "UPSTASH_REDIS_REST_TOKEN",
 ];
+
+function firstValidUrl(names: string[]): string | undefined {
+  for (const name of names) {
+    const v = process.env[name];
+    if (v && /^https:\/\//.test(v)) return v;
+  }
+  return undefined;
+}
 
 function firstDefined(names: string[]): string | undefined {
   for (const name of names) {
@@ -32,7 +46,7 @@ function firstDefined(names: string[]): string | undefined {
 
 export function kv(): Redis {
   if (client) return client;
-  const url = firstDefined(URL_CANDIDATES);
+  const url = firstValidUrl(URL_CANDIDATES);
   const token = firstDefined(TOKEN_CANDIDATES);
   if (!url || !token) {
     throw new Error(
